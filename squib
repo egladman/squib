@@ -1,0 +1,403 @@
+#!/bin/bash -e
+
+# Squib - A Static Site Generator
+
+readonly squib_crunchwrap_command="/usr/local/bin/cw"
+readonly squib_markdown_command="/usr/bin/Markdown.pl"
+readonly squib_configuration_file="squib.conf"
+readonly squib_named_pipe="squib.fifo"
+
+readonly squib_version="0.1.0"
+
+readonly build_dir="site"
+readonly squib_watch_interval=5 # Seconds
+readonly squib_directory_structure=(
+    "layouts"
+    "public"
+    "posts"
+    "includes"
+    "data"
+)
+
+readonly clr_cyan='\033[36m'
+readonly clr_yellow="\033[33m"
+readonly clr_none='\033[0m' # No color
+
+# Defaults
+fl_debug=0
+fl_watch=0
+
+readonly usage="squib v${squib_version}, a static site generator.
+Usage: ${0##*/} [options...] <path/to/variables>
+Options:
+  -h, --help                                 show this help text
+  -v, --verbose                              make the operation more talkative
+  -V. --version                              print crunchwrap version
+  -w, --watch                                rebuild site on file change
+  i, init                                    create project scaffolding
+  b, build                                   compile site
+
+Report issues at https://github.com/egladman/squib/issues
+"
+
+log::std() {
+    # Usage: log::std "string"
+    printf '%b\n' "${0##*/}: $*" 1>&2
+}
+
+log::warn() {
+    # Usage: log::warn "Danger Will Robinson"
+    log::std "${clr_yellow}WARN:${clr_none} $*"
+}
+
+log::debug() {
+    # Usage: log::debug "string"
+    if [[ $fl_debug -eq 1 ]]; then
+        log::std "${clr_cyan}DEBUG:${clr_none} $*"
+    fi
+}
+
+string::rstrip() {
+    # Usage: string::rstrip "string" "pattern"
+    printf '%s\n' "${1%%$2}"
+}
+
+string::greplace() {
+    # Usage: string::greplace "string" "pattern"
+    printf '%s\n' "${1//$2/$3}" # global find/replace
+}
+
+util::mkpipe() {
+    [[ -p "$1" ]] || mkfifo "$1"
+}
+
+util::flushpipe() {
+    dd if="$1" iflag=nonblock of=/dev/null
+}
+
+util::urlencode() {
+    # Usage: urlencode "string"
+    # Taken straight from https://github.com/dylanaraps/pure-bash-bible
+
+    local LC_ALL=C
+    for (( i = 0; i < ${#1}; i++ )); do
+        : "${1:i:1}"
+        case "$_" in
+            [a-zA-Z0-9.~_-])
+                printf '%s' "$_"
+                ;;
+
+            *)
+                printf '%%%02X' "'$_"
+                ;;
+        esac
+    done
+    printf '\n'
+}
+
+# TODO: remove 'cut' dependency
+util::generate_sha1() {
+    # Usage: util::generate_sha1 "path/to/file"
+    printf '%s\n' "$(sha1sum $1 | cut -d' ' -f1)"
+}
+
+squib::create_scaffold() {
+    # Usage: squib::create_scaffold "path/to"
+
+    local base_dir="$1"
+    [[ -z "$base_dir" ]] && base_dir="."
+    # Assumes working directory if path isn't provided
+
+    for d in "${squib_directory_structure[@]}"; do
+        mkdir "$1"/"$d"
+    done
+}
+
+squib::parse_args() {
+    # Usage: squib::parse_args
+
+    while [[ "$#" -gt 0 ]]; do
+        case "$1" in
+            -h|--help)
+                printf '%s\n' "$usage"
+                exit 0
+                ;;
+            -v|--verbose)
+                fl_debug=1
+                ;;
+            -V|--version)
+                printf '%s\n' "$squib_version"
+                exit 0
+                ;;
+            -w|--watch)
+                fl_watch=1
+                ;;
+            b|build)
+                action+=("build")
+                ;;
+            i|init)
+                squib::create_scaffold "$2"
+                exit 0
+                ;;
+            *)
+                if [[ "${#action[@]}" -gt 1 ]]; then
+                    printf '%s\n' "$usage"
+                    exit 1
+                fi
+                # Anything that isn't a flag is considered an 'action'
+                action+=("$1")
+        esac
+        shift
+    done
+}
+
+squib::front_matter() {
+    # Usage: squib::front_matter "/path/to/file"
+    # Print a file's front matter
+
+    local variables=()
+    local i=0
+
+    while IFS='' read -r line; do
+        i=$((i+1))
+        if [[ $i -eq 1 ]]; then
+            case "$line" in
+                "---")
+                    continue
+                    ;;
+                *)
+                    log::warn "Skipping '$1'. No front matter found."
+                    return 1
+                    ;;
+            esac
+        fi
+
+        # Have we reached the end of the 'front matter'
+        [[ "$line" = "---" ]] && break
+
+        variables+=("$line")
+    done < "$1"
+
+    printf '%s ' "${variables[@]}"
+}
+
+watch::generate_hashs() {
+    # Usage: watch::generate_hashs
+
+    [[ -z "$1" ]] && return 1
+
+    # Create array: 'files'
+    readarray -d '' files < <(find *.html *.md *.conf "${squib_directory_structure[@]}" -type f -print)
+
+    for f in "${files[@]}"; do
+        watch::generate_hash "$f"
+    done
+}
+
+watch::generate_hash() {
+    # Usage: watch::generate_hash <path/to/file>
+
+    # Thoughts
+    # There's many ways we could go about this. Off the top of my head:
+    # 1. Check the inode's mtime using "stat -c '%Y'"
+    # 2. Parse the output of "ls -l"
+    # 3. Generate a checksum of the file
+
+    # Option 1 isn't cross-platform. 'stat' provided by GNU Coreutils
+    # differs from FreeBSD's stat (and I assume other platforms as well)
+
+    # Option 2 is cross-platform. Parsing "ls" is generally frowned upon.
+    # Our use case is considered safe since we're parsing the timestamp
+    # that preceeds the actual filename, but I still would rather avoid it.
+
+    # Option 3 is cross-platform. coreutils provides 'sha1sum' and 'md5sum'.
+    # From my testing 'sha1sum' is the faster choice. I'm not concerned about
+    # collisons since we're not using it for cryptographic purposes.
+
+    # Side note: crc32 is a tad faster than sha1, but it's a seperate package and
+    # doesn't come bundled with coreutils
+
+    local sha1=$(util::generate_sha1 "$f")
+    file_hashes["$f"]="$sha1" # Array is declared in function watch::all
+    log::debug "file: '$f', sha1sum: '$sha1'"
+}
+
+watch::run() {
+    # Usage watch::run "path"
+    case "$1" in
+        public/*)
+            copy:all
+            ;;
+        *.html|*.md)
+            render::page "$1"
+            ;;
+        *)
+            log::warn "Ignoring '$1'"
+            return 1
+            ;;
+    esac
+}
+
+watch::all() {
+    declare -A file_hashes
+    watch::generate_hash # Seed file_hashes
+
+    local val sha1
+
+    log::std "watching..."
+    while sleep $squib_watch_interval; do
+        for key in ${!file_hashes[@]}; do
+            val="${file_hashes[${key}]}"
+            sha1="$(util::generate_sha1 $key)"
+
+            if [[ "$val" != "$sha1" ]]; then # Update stored sha1 with new value
+                file_hashes["$key"]="$sha1"
+                log::std "file '$key' modified."
+
+                local rc
+                watch::run "$key" && rc=$?
+                [[ $rc -ne 0 ]] && log::warn "'watch::run $key' returned code: $rc"
+
+                continue
+            fi
+        done
+    done
+}
+
+render::page() {
+    local src="$1" dest="$2"
+    declare -a content
+
+    # Infer destination path if one isn't provided
+    [[ -z "$dest" ]] && dest="$build_dir"/"$src"
+
+    # We determine the 'dest' from 'src'. So even though the markdown get's
+    # compiled to html, we must rename the extension to reflect these changes.
+    # Otherwise browsers won't know what to do with a '.md'
+
+    # This is a roundabout way that avoids spawning processes like 'basename'
+    [[ "$dest" == *.md ]] && dest=$(string::rstrip "$dest" ".md").html
+
+    log::std "Rendering '$src' to '$dest'"
+
+    declare -a front_matter_variables
+    front_matter_variables=($(squib::front_matter "$src"))
+    if [[ $? -ne 0 ]]; then
+        log::warn "function 'squib::front_matter' returned non-zero code."
+        return
+    fi
+
+    # layout
+    # Variable is sourced from the file's front matter. If 'layout' isn't
+    # specified default to 'layouts/default.html'
+    [[ -z "$layout" ]] && layout="layouts/default.html"
+
+    log::debug "file '$src',  front matter: '${front_matter_variables[@]}'"
+    eval "${front_matter_variables[@]}"
+
+    local front_matter_line_count=$((${#front_matter_variables[@]}+2))
+    # We add '2' to account for each triple hyphen ( i.e. --- ) that denotes the
+    # front matter's start/end
+
+    # Extract file contents below front matter block
+    local i=0
+    while IFS='' read -r line; do
+        i=$((i+1))
+        [[ $i -le $front_matter_line_count ]] && continue
+
+        content+=("$line")
+    done < "$src"
+
+    # TODO: remove 'dirname' dependency
+    parent_dir=$(dirname "$dest")
+    [[ -d "$parent_dir" ]] || mkdir -p "$parent_dir"
+
+    # Compile markdown if eligible
+    if [[ "$src" == *.md ]]; then
+        content=($(printf '%s\n' "${content[@]}" | Markdown.pl))
+    fi
+    printf '%s ' "__content__=\"${content[@]}\"" > "$squib_named_pipe" &
+
+    # TODO: remmove 'cat'
+    if [[ "$fl_debug" -eq 1 ]]; then
+        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_configuration_file" "$squib_named_pipe" | tee "$dest"
+    else
+        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_configuration_file" "$squib_named_pipe" > "$dest"
+    fi
+}
+
+render::all() {
+    # Terminology
+    # Any '.html' or '.md' file that resides outside of directories: 'layouts', 'includes' is called a 'page'.
+    # A 'post' is a 'page', but a 'page' is not a 'post'.
+
+    declare -a pages
+    pages=($(find . \( -name layouts -o -name includes -o -name public -o -name site -o -name .git \) -prune -o -type f \( -name "*.html" -o -name "*.md" \) -print))
+    # ( -name layouts -o -name includes -o -name public -o -name site -o -name .git ) -prune
+    # Don't traverse the following  directories:
+    # layouts, includes, .git
+
+    # -type f ( -name "*.html" -o -name "*.md" ) -print
+    # Only look for files that have extensions '.html' or '.md'
+
+    blacklist=($(find . -maxdepth 1 -type f -name "*.md" -print))
+    # -maxdepth 1
+    # Don't traverse into any subdirectories. Only look for files in the
+    # current working directory
+
+    # -type f -name "*.md"
+    # Only look for files that have extension '.md'
+
+    log::debug "blacklisting: ${blacklist[@]}"
+
+    # Remove blacklisted files found in array: 'blacklist' from array: 'pages'
+    for i in "${blacklist[@]}"; do
+        pages=($(string::greplace "${pages[*]}" "$i" ""))
+    done
+
+    # Thoughts
+    # I'm sure there's a better way to exclude top-level '.md' files from array
+    # 'pages' without running 'find' twice. However the inital 'find' command
+    # is already difficult to read, and I wouldn't want to add to it's complexity.
+
+    log::debug "Processing ${#pages[@]} page(s)"
+    log::debug "${pages[@]}"
+
+    for f in "${pages[@]}"; do
+        render::page "$f"
+    done
+}
+
+prep::all() {
+    [[ ! -d "$build_dir" ]] && mkdir "$build_dir"
+    util::mkpipe "$squib_named_pipe" || util::flushpipe "$squib_named_pipe"
+}
+
+copy::all() {
+    # Copy all static files in dir 'public'
+    cp -r public/* "$build_dir"/
+}
+
+build::all() {
+    prep::all
+    render::all
+    copy::all
+
+    [[ $fl_watch -eq 1 ]] && watch::all
+}
+
+main() {
+    declare -a action
+    squib::parse_args "$@"
+
+    case "$action" in
+        "build")
+            build::all
+            ;;
+        *)
+            log::warn "Unsupported action: '$action'"
+            exit 1
+            ;;
+    esac
+}
+main "$@"

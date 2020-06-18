@@ -1,0 +1,8 @@
+foo="hello world"
+
+bar=$(cat <<'EOF'
+one
+two
+three
+four
+)
