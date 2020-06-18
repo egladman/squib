@@ -321,7 +321,6 @@ render::page() {
         content=($(printf '%s\n' "${content[@]}" | Markdown.pl))
     fi
 
-    
     declare -a extra_variables
     extra_variables+=("__content__=\"${content[@]}\"")
     [[ -v squib_baseurl ]] && extra_variables+=("baseurl=\"$squib_baseurl\"")
