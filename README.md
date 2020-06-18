@@ -6,7 +6,9 @@ A surprisingly capable albeit slow static site generator written in Bash 4.0+.
 While writing [crunchwrap](https://github.com/egladman/crunchwrap) for another project I came to realization that with a few more LOC I could have my very own static site generator. This quickly snowballed into the project you see today as I kept adding features.
 
 ### Retrospect
-Squib doesn't really bring anything new to the table besides the Bash novelity. Markdown support is optional because it depends on Daring Fireball's original Perl implementation. I much prefer writing markdown over html. This begs the question, if I'm having to depend on another language to in order to have a 'feature complete' experience what business do I have writting this in Bash to begin with? None, but that obviously didn't stop me. I'll be the first to admit, there are much better alternatives out there that aren't shackled by their written language. Many of squib's design decisions were made to skirt around my perceived limitations of Bash.
+Squib doesn't really bring anything new to the table besides the Bash novelity. Markdown support is optional because it depends on Daring Fireball's original Perl implementation. I much prefer writing markdown over html. This begs the question, if I'm having to depend on another language for a 'feature complete' experience what business do I have writing squib in Bash to begin with? None, but that obviously didn't stop me.
+
+I'll be the first to admit, there are much better alternatives out there that aren't shackled by their written language. Many of squib's design decisions were made to skirt around my perceived limitations of Bash.
 
 ### Quick Start
 
@@ -14,20 +16,36 @@ Create project scaffolding in the working directory
 ```
 squib init
 ```
+---
 
 Performs a one off build of your website to `site`
 ```
 squib build
 ```
+---
 
 Builds your website any time a source file changes
 ```
 squib build --watch
 ```
+---
 
 Shows help
 ```
 squib --help
+```
+
+### Tips
+
+Use github pages? Don't forget to configure the baseurl.
+```
+build --watch --baseurl /myproject #https://egladman.github.io/myproject
+```
+---
+
+Don't want to spin up a webserver for development? Cheat by using absolute paths
+```
+squib build --watch --baseurl $(pwd)/site
 ```
 
 ### Install

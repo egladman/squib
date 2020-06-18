@@ -132,6 +132,10 @@ squib::parse_args() {
             -w|--watch)
                 fl_watch=1
                 ;;
+            --baseurl)
+                squib_baseurl="$2"
+                shift
+                ;;
             b|build)
                 action+=("build")
                 ;;
@@ -316,7 +320,13 @@ render::page() {
     if [[ "$src" == *.md ]]; then
         content=($(printf '%s\n' "${content[@]}" | Markdown.pl))
     fi
-    printf '%s ' "__content__=\"${content[@]}\"" > "$squib_named_pipe" &
+
+    
+    declare -a extra_variables
+    extra_variables+=("__content__=\"${content[@]}\"")
+    [[ -v squib_baseurl ]] && extra_variables+=("baseurl=\"$squib_baseurl\"")
+
+    printf '%s ' "${extra_variables[@]}" > "$squib_named_pipe" &
 
     # TODO: remmove 'cat'
     if [[ "$fl_debug" -eq 1 ]]; then
