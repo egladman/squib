@@ -57,19 +57,15 @@ cp squib/squib /usr/local/bin/squib
 
 #### Dependencies
 
-- [crunchwrap](https://github.com/egladman/crunchwrap)
-  - A templating engine written in pure bash
-
-- GNU coreutils
-  - `sha1sum`, `cat`, `cut`
-
-- GNU findutils
-  - `find`
+- [crunchwrap](https://github.com/egladman/crunchwrap) - A templating engine written in pure Bash
+- Self-loathing. *Why else would you be considering using a static site generator written in **Bash**.*
+- GNU Coreutils - `sha1sum` `cat` `cut`
+- GNU findutils - `find`
 
 *Note:* I have yet to test against non gnu utilities. The long-term goal is have 100% compatability with BSD variants. Until that happens presume incompatability. Submit an issue with your finding/results.
 
 #### Optional Dependencies
 
-- [Markdown](https://github.com/bobtfish/text-markdown)
-  - You can install via `cpan` or with your system package manager. (i.e. `dnf install perl-Text-Markdown`)
-  - If you choose not to install Markdown your blog posts must be written in html.
+- [Markdown](https://github.com/bobtfish/text-markdown) - Install via `cpan` or with your system package manager. (i.e. `dnf install perl-Text-Markdown`)
+
+*Note:* If you choose not to install Markdown your blog posts must be written in html.
