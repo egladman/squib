@@ -9,14 +9,13 @@ readonly squib_named_pipe="squib.fifo"
 
 readonly squib_version="0.1.0"
 
-readonly build_dir="site"
+readonly squib_build_dir="site"
 readonly squib_watch_interval=5 # Seconds
 readonly squib_directory_structure=(
     "layouts"
     "public"
     "posts"
     "includes"
-    "data"
 )
 
 readonly clr_cyan='\033[36m'
@@ -57,6 +56,11 @@ log::debug() {
     fi
 }
 
+string::lstrip() {
+    # Usage: string::lstrip "string" "pattern"
+    printf '%s\n' "${1##$2}"
+}
+
 string::rstrip() {
     # Usage: string::rstrip "string" "pattern"
     printf '%s\n' "${1%%$2}"
@@ -68,16 +72,31 @@ string::greplace() {
 }
 
 util::mkpipe() {
+    # Usage: util::mkpipe "/path/to/pipe"
     [[ -p "$1" ]] || mkfifo "$1"
 }
 
 util::flushpipe() {
-    dd if="$1" iflag=nonblock of=/dev/null
+    >"$1"
+}
+
+util::basename() {
+    # Usage: basename "path" ["suffix"]
+    # Taken straight from https://github.com/dylanaraps/pure-bash-bible
+    # MIT LICENSE
+
+    local tmp
+    tmp=${1%"${1##*[!/]}"}
+    tmp=${tmp##*/}
+    tmp=${tmp%"${2/"$tmp"}"}
+
+    printf '%s\n' "${tmp:-/}"
 }
 
 util::urlencode() {
     # Usage: urlencode "string"
     # Taken straight from https://github.com/dylanaraps/pure-bash-bible
+    # MIT LICENSE
 
     local LC_ALL=C
     for (( i = 0; i < ${#1}; i++ )); do
@@ -113,6 +132,18 @@ squib::create_scaffold() {
     done
 }
 
+util::skim_conf() {
+    # Usage: util::skim_conf
+    # Add additional variables with extreme caution!
+    while IFS='' read -r line; do
+        case "$line" in
+            base_url\=*|pagination_url\=*)
+                log::debug "Evaluating line '$line' in file '$1'"
+                eval "$line"
+        esac
+    done < "$1"
+}
+
 squib::parse_args() {
     # Usage: squib::parse_args
 
@@ -133,7 +164,15 @@ squib::parse_args() {
                 fl_watch=1
                 ;;
             --baseurl)
-                squib_baseurl="$2"
+                # Alright so I know this is stupid. But hear me out.
+                # I'm lazy..
+                # The reusing the variable name found in 'squib.conf'. Further
+                # down we check if 'base_url_override' is set. We don't actually
+                # care what it evaluates to
+                base_url="$2"
+                base_url_override="$base_url"
+
+                log::debug "Overriding 'base_url' with '$2'"
                 shift
                 ;;
             b|build)
@@ -155,8 +194,8 @@ squib::parse_args() {
     done
 }
 
-squib::front_matter() {
-    # Usage: squib::front_matter "/path/to/file"
+page::collect_front_matter() {
+    # Usage: page::collect_front_matter "/path/to/file"
     # Print a file's front matter
 
     local variables=()
@@ -182,24 +221,120 @@ squib::front_matter() {
         variables+=("$line")
     done < "$1"
 
-    printf '%s ' "${variables[@]}"
+    printf '%s\n' "${variables[@]}"
 }
 
-watch::generate_hashs() {
-    # Usage: watch::generate_hashs
+post::lookup_url() {
+    if [[ ! -v post_lookup_table ]]; then
+        declare -x -A post_lookup_table # Associative array
 
-    [[ -z "$1" ]] && return 1
+        for post in "${squib_posts[@]}"; do
+            post_url=$(post::construct_url "$post")
 
-    # Create array: 'files'
-    readarray -d '' files < <(find *.html *.md *.conf "${squib_directory_structure[@]}" -type f -print)
+            log::debug "Mapping post '$post' to url '$post_url'"
+            post_lookup_table["$post"]="$post_url"
+        done
 
-    for f in "${files[@]}"; do
-        watch::generate_hash "$f"
+        printf '%s\n' "${post_lookup_table[$post]}"
+    fi
+}
+
+post::construct_url() {
+    local post=$(util::basename "$1")
+
+    # Posts must adhere to either of the two naming conventions:
+    # posts/YYYY-MM-DD-hello-world.md
+    # posts/YYYY-MM-DD-hello-world.html
+
+    # TODO: add regex to check filename format is correct
+
+    # post::construct_url splits a post's filename into two parts:
+    # ---------------------------------------------------------------------------
+    # 1. The timestamp
+    # $pagination_url/YYYY-MM-DD<foobar>.md
+    #                 ^^^^^^^^^^
+
+    # 2. The slug
+    # This is everything that precedes 'YYYY-MM-DD-'
+    # $pagination_url/YYYY-MM-DD-Hello-World.html
+    #                            ^^^^^^^^^^^^^^^^
+
+    # Using substrings is prefered over splitting 'path' into an array delimited
+    # by '-', since the slug could contain additional hyphens.
+
+    local post_timestamp=${post:0:10} # The timestamp length is a fixed.
+    local post_slug=${post:11} # TODO: downcase and run against urlencode
+    [[ "$post_slug" == *.md ]] && post_slug=$(string::rstrip "$post_slug" ".md").html # duplicate code
+
+    # /year/month/day/slug.html
+    printf '%s\n' "${base_url}${pagination_url}/${post_timestamp:0:4}/${post_timestamp:5:2}/${post_timestamp:8:2}/$post_slug"
+}
+
+post::render_links() {
+    declare -a post_html_tags
+
+    local post_relative_url
+    for post in "${squib_posts[@]}"; do
+        readarray -t front_matter < <(page::collect_front_matter "$post")
+        if [[ $? -ne 0 ]]; then
+            log::warn "function 'page::collect_front_matter' returned non-zero code."
+            return
+        fi
+
+        for var in "${front_matter[@]}"; do
+            [[ "$var" == title\=* ]] && eval "$var"
+        done
+
+        if [[ -z "$title" ]]; then
+            log::warn "'title' is not defined in front matter of post '$post'"
+            return 1
+        fi
+
+        post_relative_url=$(post::construct_url "$post")
+        if [[ $? -ne 0 ]]; then
+            log::warn "function 'post::construct_url' returned non-zero code."
+            return 1
+        fi
+
+        local tmp post_timestamp
+        tmp=$(util::basename "$post")
+        post_timestamp=${tmp:0:10}
+        unset tmp
+
+        # TODO: get rid of gnu date dependency
+        post_timestamp_pretty=$(date -d "$post_timestamp" "+%B %d, %Y")
+
+        #post_html_tags+=("<li><h3><a href=\"$post_relative_url\">$title</a></h3><span>$post_timestamp_pretty</span></li>")
+        post_html_tags+=("<li><span>$post_timestamp_pretty</span> &raquo; <a href=\"$post_relative_url\">$title</a></li>")
+        unset title
+    done
+
+    printf '%s\n' "${post_html_tags[@]}"
+}
+
+watch::generate_hashes() {
+    # Usage: watch::generate_hashes
+
+    if [[ -n "$1" ]]; then
+        log::warn "func '${FUNCNAME[0]}' does not support arguments."
+        return 1
+    fi
+
+    declare -a files
+    files=($(find * \( -name site -o -name .git -o -name README.md \) -prune -o -type f -print))
+
+    for file in "${files[@]}"; do
+        watch::generate_hash "$file"
     done
 }
 
 watch::generate_hash() {
     # Usage: watch::generate_hash <path/to/file>
+
+    if [[ -n "$2" ]]; then
+        log::warn "Whoa.. func '${FUNCNAME[0]}' called with more than one argument."
+        return 1
+    fi
 
     # Thoughts
     # There's many ways we could go about this. Off the top of my head:
@@ -221,9 +356,9 @@ watch::generate_hash() {
     # Side note: crc32 is a tad faster than sha1, but it's a seperate package and
     # doesn't come bundled with coreutils
 
-    local sha1=$(util::generate_sha1 "$f")
-    file_hashes["$f"]="$sha1" # Array is declared in function watch::all
-    log::debug "file: '$f', sha1sum: '$sha1'"
+    local sha1=$(util::generate_sha1 "$1")
+    file_hashes["$1"]="$sha1" # Array is declared in function watch::all
+    log::debug "file: '$1', sha1sum: '$sha1'"
 }
 
 watch::run() {
@@ -233,7 +368,10 @@ watch::run() {
             copy:all
             ;;
         *.html|*.md)
-            render::page "$1"
+            page::render "$1"
+            ;;
+        *.conf)
+            render::all
             ;;
         *)
             log::warn "Ignoring '$1'"
@@ -244,19 +382,17 @@ watch::run() {
 
 watch::all() {
     declare -A file_hashes
-    watch::generate_hash # Seed file_hashes
-
-    local val sha1
+    watch::generate_hashes # Seed file_hashes
 
     log::std "watching..."
     while sleep $squib_watch_interval; do
         for key in ${!file_hashes[@]}; do
-            val="${file_hashes[${key}]}"
-            sha1="$(util::generate_sha1 $key)"
+            local val="${file_hashes[${key}]}"
+            local sha1="$(util::generate_sha1 $key)"
 
             if [[ "$val" != "$sha1" ]]; then # Update stored sha1 with new value
                 file_hashes["$key"]="$sha1"
-                log::std "file '$key' modified."
+                log::std "file '$key' modified.\nold: $val\nnew: $sha1"
 
                 local rc
                 watch::run "$key" && rc=$?
@@ -268,12 +404,12 @@ watch::all() {
     done
 }
 
-render::page() {
+page::render() {
     local src="$1" dest="$2"
     declare -a content
 
     # Infer destination path if one isn't provided
-    [[ -z "$dest" ]] && dest="$build_dir"/"$src"
+    [[ -z "$dest" ]] && dest="$squib_build_dir"/"$src"
 
     # We determine the 'dest' from 'src'. So even though the markdown get's
     # compiled to html, we must rename the extension to reflect these changes.
@@ -284,10 +420,13 @@ render::page() {
 
     log::std "Rendering '$src' to '$dest'"
 
-    declare -a front_matter_variables
-    front_matter_variables=($(squib::front_matter "$src"))
+    # We can to use '\n' as a delimiter otherwise variables that contain spaces
+    # would be broken up. There are certainly ways to circumvent this, I just
+    # don't care to put in the extra effort. Like who the fuck needs multi-line
+    # titles!?
+    readarray -t front_matter < <(page::collect_front_matter "$src")
     if [[ $? -ne 0 ]]; then
-        log::warn "function 'squib::front_matter' returned non-zero code."
+        log::warn "function 'page::collect_front_matter' returned non-zero code."
         return
     fi
 
@@ -296,10 +435,10 @@ render::page() {
     # specified default to 'layouts/default.html'
     [[ -z "$layout" ]] && layout="layouts/default.html"
 
-    log::debug "file '$src',  front matter: '${front_matter_variables[@]}'"
-    eval "${front_matter_variables[@]}"
+    log::debug "file '$src',  front matter: '${front_matter[@]}'"
+    eval "${front_matter[@]}"
 
-    local front_matter_line_count=$((${#front_matter_variables[@]}+2))
+    local front_matter_line_count=$((${#front_matter[@]}+2))
     # We add '2' to account for each triple hyphen ( i.e. --- ) that denotes the
     # front matter's start/end
 
@@ -314,6 +453,7 @@ render::page() {
 
     # TODO: remove 'dirname' dependency
     parent_dir=$(dirname "$dest")
+
     [[ -d "$parent_dir" ]] || mkdir -p "$parent_dir"
 
     # Compile markdown if eligible
@@ -323,34 +463,92 @@ render::page() {
 
     declare -a extra_variables
     extra_variables+=("__content__=\"${content[@]}\"")
-    [[ -v squib_baseurl ]] && extra_variables+=("baseurl=\"$squib_baseurl\"")
+    extra_variables+=("__posts_all__=\"$squib_post_html_tags\"")
+
+    [[ -v metadata_variables ]] && extra_variables=("${extra_variables[@]}" "${metadata_variables[@]}")
+    [[ -v base_url_override ]] && extra_variables+=("base_url=\"$base_url\"")
 
     printf '%s ' "${extra_variables[@]}" > "$squib_named_pipe" &
 
-    # TODO: remmove 'cat'
+    # TODO: remmove 'cat' dependency
     if [[ "$fl_debug" -eq 1 ]]; then
         cat "$layout" | "$squib_crunchwrap_command" -i "$squib_configuration_file" "$squib_named_pipe" | tee "$dest"
     else
         cat "$layout" | "$squib_crunchwrap_command" -i "$squib_configuration_file" "$squib_named_pipe" > "$dest"
     fi
+
+    if [[ $? -ne 0 ]]; then
+        log::warn "function '$squib_crunchwrap_command' returned non-zero code."
+        return 1
+    fi
+}
+
+post::collect_metadata() {
+    # Usage: squib::post_metadata "/path/to/post"
+    # Print post meta data in a format that's easily consumable
+
+    local post="$1"
+
+    declare -a meta_post_variables
+
+    # __published_url__
+    meta_variables+=("__published_url__=\"$(post::lookup_url)\"")
+
+    # __date__
+    local tmp
+    tmp=$(util::basename "$file")
+    tmp=$(date -d "${tmp:0:10}" "+%B %d, %Y")
+    meta_variables+=("__date__=\"$tmp\"")
+    unset tmp
+
+    # __title__ AND __author__
+    readarray -t front_matter_variables < <(page::collect_front_matter "$post")
+    if [[ $? -ne 0 ]]; then
+        log::warn "function 'page::collect_front_matter' returned non-zero code."
+        return 1
+    fi
+
+    meta_variables+=(
+        "__title__=\"undefined\""
+        "__author__=\"undefined\""
+        "__tags__=\"undefined\""
+    )
+
+    # Override variables that are defined in the front matter
+    for var in "${front_matter_variables[@]}"; do
+        case "$var" in
+            title\=*)
+                local val="${var:6}"
+                meta_variables+=("__title__=${val:=undefined}")
+                ;;
+            author\=*)
+                local val="${var:7}"
+                meta_variables+=("__author__=${val:=undefined}")
+                ;;
+            tags\=*)
+                local val="${var:5}"
+                meta_variables+=("__tags__=${val:=undefined}")
+                ;;
+        esac
+    done
+
+    # The following variables are made available inside posts:
+    # __published_url__
+    # __date__
+    # __title__
+    # __author__
+    # __tags__
+
+    printf '%s\n' "${meta_variables[@]}"
 }
 
 render::all() {
-    # Terminology
-    # Any '.html' or '.md' file that resides outside of directories: 'layouts', 'includes' is called a 'page'.
-    # A 'post' is a 'page', but a 'page' is not a 'post'.
+    # Since we have files like 'README.md' and 'LICENSE.md' that aren't consumed
+    # by squib, I'm going to flat out ignore all markdown files in the top-level
+    # directory. You should instead use '.html'
 
-    declare -a pages
-    pages=($(find . \( -name layouts -o -name includes -o -name public -o -name site -o -name .git \) -prune -o -type f \( -name "*.html" -o -name "*.md" \) -print))
-    # ( -name layouts -o -name includes -o -name public -o -name site -o -name .git ) -prune
-    # Don't traverse the following  directories:
-    # layouts, includes, .git
-
-    # -type f ( -name "*.html" -o -name "*.md" ) -print
-    # Only look for files that have extensions '.html' or '.md'
-
-    blacklist=($(find . -maxdepth 1 -type f -name "*.md" -print))
-    # -maxdepth 1
+    blacklist=($(find * -maxdepth 0 -type f -name "*.md" -print))
+    # -maxdepth 0
     # Don't traverse into any subdirectories. Only look for files in the
     # current working directory
 
@@ -359,9 +557,10 @@ render::all() {
 
     log::debug "blacklisting: ${blacklist[@]}"
 
-    # Remove blacklisted files found in array: 'blacklist' from array: 'pages'
-    for i in "${blacklist[@]}"; do
-        pages=($(string::greplace "${pages[*]}" "$i" ""))
+    # Remove blacklisted files found in array: 'blacklist' from array: 'squib_pages'
+    declare -a squib_pages_copy
+    for file in "${blacklist[@]}"; do
+        squib_pages_copy=($(string::greplace "${squib_pages[*]}" "$file" ""))
     done
 
     # Thoughts
@@ -369,25 +568,60 @@ render::all() {
     # 'pages' without running 'find' twice. However the inital 'find' command
     # is already difficult to read, and I wouldn't want to add to it's complexity.
 
-    log::debug "Processing ${#pages[@]} page(s)"
-    log::debug "${pages[@]}"
+    log::debug "Processing ${#squib_pages_copy[@]} page(s)"
+    log::debug "${squib_pages_copy[@]}"
 
-    for f in "${pages[@]}"; do
-        render::page "$f"
+    for file in "${squib_pages_copy[@]}"; do
+        local dest=""
+        if [[ " ${squib_posts[@]} " =~ " ${file} " ]]; then # it's a post
+            readarray -t metadata_variables < <(post::collect_metadata "$file")
+            if [[ $? -ne 0 ]]; then
+                log::warn "function 'post::collect_metadata' returned non-zero code."
+                return 1
+            fi
+
+            dest="$squib_build_dir"$(post::construct_url "$file")
+            if [[ $? -ne 0 ]]; then
+                log::warn "function 'post::construct_url' returned non-zero code."
+                return 1
+            fi
+        fi
+        page::render "$file" "$dest"
+        unset metadata_variables
     done
 }
 
 prep::all() {
-    [[ ! -d "$build_dir" ]] && mkdir "$build_dir"
+    [[ ! -d "$squib_build_dir" ]] && mkdir "$squib_build_dir"
     util::mkpipe "$squib_named_pipe" || util::flushpipe "$squib_named_pipe"
 }
 
 copy::all() {
     # Copy all static files in dir 'public'
-    cp -r public/* "$build_dir"/
+    cp -r public/* "$squib_build_dir"/
 }
 
 build::all() {
+    # Terminology
+    # Any '.html' or '.md' file that resides outside of directories: 'layouts', 'includes' is called a 'page'.
+    # A 'post' is a 'page', but a 'page' is not a 'post'.
+
+    readonly squib_pages=($(find * \( -name layouts -o -name includes -o -name public -o -name site -o -name .git \) -prune -o -type f \( -name "*.html" -o -name "*.md" \) -print))
+    # ( -name layouts -o -name includes -o -name public -o -name site -o -name .git ) -prune
+    # Don't traverse the following  directories:
+    # layouts, includes, .git
+
+    # -type f ( -name "*.html" -o -name "*.md" ) -print
+    # Only look for files that have extensions '.html' or '.md'
+
+    readonly squib_posts=($(find posts -type f \( -name "*.html" -o -name "*.md" \) -print | sort -z))
+
+    readonly squib_post_html_tags="<ul>$(post::render_links)</ul>"
+    if [[ $? -ne 0 ]]; then
+        log::warn "function 'post::render_links' returned non-zero code."
+        return 1
+    fi
+
     prep::all
     render::all
     copy::all
@@ -397,6 +631,8 @@ build::all() {
 
 main() {
     declare -a action
+
+    util::skim_conf "$squib_configuration_file"
     squib::parse_args "$@"
 
     case "$action" in
