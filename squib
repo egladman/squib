@@ -2,21 +2,22 @@
 
 # Squib - A Static Site Generator
 
-readonly squib_crunchwrap_command="/usr/local/bin/cw"
-readonly squib_markdown_command="/usr/bin/Markdown.pl"
-readonly squib_configuration_file="squib.conf"
-readonly squib_named_pipe="squib.fifo"
-
 readonly squib_version="0.1.0"
-
-readonly squib_build_dir="site"
-readonly squib_watch_interval=5 # Seconds
+readonly squib_configuration_file="squib.ini"
 readonly squib_directory_structure=(
     "layouts"
     "public"
     "posts"
     "includes"
 )
+
+# Can be overridden in 'squib.ini'
+squib_crunchwrap_command="./crunchwrap"
+squib_markdown_command="/usr/bin/Markdown.pl"
+squib_named_pipe="squib.fifo"
+squib_build_dir="site"
+squib_watch_interval=5 # Seconds
+squib_pagination_url="/blog"
 
 readonly clr_cyan='\033[36m'
 readonly clr_yellow="\033[33m"
@@ -132,16 +133,77 @@ squib::create_scaffold() {
     done
 }
 
-util::skim_conf() {
-    # Usage: util::skim_conf
-    # Add additional variables with extreme caution!
-    while IFS='' read -r line; do
+squib::parse_ini() {
+    # Usage: squib::parse_ini "path/to/file"
+    #        squib::parse_ini "path/to/file" false
+
+    # By default variables will be evaluated. Disable this by passing in "false"
+
+    local regex_contains_variable="^([a-zA-Z0-9_]{1,})([[:space:]]\=[[:space:]])(.*)$"
+    local regex_contains_wrapped_quotes="^([\"\'])(.*)([\"\'])$"
+    local regex_contains_inside_quotes="^([\"])(.*)([\"])(.*)([\"])$"
+
+    local multi_line=""
+    while IFS='' read -r line || [[ -n "$line" ]]; do
+        # Strip trailing comments from line
+        if [[ "$line" == *[[:space:]]\#* ]]; then
+            line="${line%%\#*}"
+        fi
+
         case "$line" in
-            base_url\=*|pagination_url\=*)
-                log::debug "Evaluating line '$line' in file '$1'"
-                eval "$line"
+            \#*|\;*)
+                # Ignore commented line
+                continue
+                ;;
+            \[*|*\])
+                # There is no explicit "end of section" delimiter; sections end at
+                # the next section declaration
+                section="${line##\[}"     # Strip left bracket
+                section="${section%%\]}_" # Strip right bracket
+                continue
+                ;;
+            *\\)
+                multi_line+="${line%%\\}\n"
+                ;;
+            *)
+                if [[ -n "$multi_line" ]]; then
+                    multi_line+="$line"
+                    line="$multi_line"
+                    multi_line=""
+                fi
+                ;;
         esac
+
+        if [[ ! "$line" =~ $regex_contains_variable ]] || [[ -n "$multi_line" ]]; then
+            continue
+        fi
+
+        local name val
+        val="${line/*\= }"            # Everything after the equals sign
+        name="${section}${line/$val}" # Invert match. This way we know we've captured everything
+        name="${name%% *}"            # Remove trailing whitespace and equals sign
+
+        # Wrap 'val' in quotes if they're missing
+        if [[ ! "$val" =~ $regex_contains_wrapped_quotes ]]; then
+            val="\"$val\""
+        fi
+
+        if [[ "$val" =~ $regex_contains_inside_quotes ]]; then
+            local tmp
+            tmp="${val##\"}"      # Strip left quote
+            tmp="${tmp%%\"}"      # Strip right quote
+            tmp="${tmp//\"/\\\"}" # Escape all quotes
+            val="\"$tmp\""        # Add back the wrapped quotes
+            unset tmp
+        fi
+
+        local declaration
+        declaration="$(printf '%b\n' "$name=$val")"
+
+        [[ "$2" == "false" ]] || eval "$declaration"
+        printf '%s\n' "$declaration"
     done < "$1"
+
 }
 
 squib::parse_args() {
@@ -169,8 +231,8 @@ squib::parse_args() {
                 # The reusing the variable name found in 'squib.conf'. Further
                 # down we check if 'base_url_override' is set. We don't actually
                 # care what it evaluates to
-                base_url="$2"
-                base_url_override="$base_url"
+                squib_base_url="$2"
+                base_url_override="$squib_base_url"
 
                 log::debug "Overriding 'base_url' with '$2'"
                 shift
@@ -267,7 +329,7 @@ post::construct_url() {
     [[ "$post_slug" == *.md ]] && post_slug=$(string::rstrip "$post_slug" ".md").html # duplicate code
 
     # /year/month/day/slug.html
-    printf '%s\n' "${base_url}${pagination_url}/${post_timestamp:0:4}/${post_timestamp:5:2}/${post_timestamp:8:2}/$post_slug"
+    printf '%s\n' "${squib_base_url}${squib_pagination_url}/${post_timestamp:0:4}/${post_timestamp:5:2}/${post_timestamp:8:2}/$post_slug"
 }
 
 post::render_links() {
@@ -458,23 +520,27 @@ page::render() {
 
     # Compile markdown if eligible
     if [[ "$src" == *.md ]]; then
-        content=($(printf '%s\n' "${content[@]}" | Markdown.pl))
+        content=("$(printf '%s\n' "${content[@]}" | "${squib_markdown_command}")")
     fi
+    content_base64="$(printf '%s\n' "${content[@]}" | base64 -w0)"
 
     declare -a extra_variables
-    extra_variables+=("__content__=\"${content[@]}\"")
+    extra_variables+=("__content__=\"$content_base64\"")
     extra_variables+=("__posts_all__=\"$squib_post_html_tags\"")
+    [[ -v metadata_variables ]] && extra_variables+=("${metadata_variables[@]}")
+    [[ -v base_url_override ]] && extra_variables+=("base_url=\"$squib_base_url\"")
 
-    [[ -v metadata_variables ]] && extra_variables=("${extra_variables[@]}" "${metadata_variables[@]}")
-    [[ -v base_url_override ]] && extra_variables+=("base_url=\"$base_url\"")
+    printf '%s\n' "${extra_variables[@]}" "$(squib::parse_ini "$squib_configuration_file" false)" > "$squib_named_pipe" &
+    #squib::parse_ini "$squib_configuration_file" >> "$squib_named_pipe" &
 
-    printf '%s ' "${extra_variables[@]}" > "$squib_named_pipe" &
+    printf '%s\n' "${extra_variables[@]}" > "/tmp/test"
+    squib::parse_ini "$squib_configuration_file" >> "/tmp/test"
 
     # TODO: remmove 'cat' dependency
     if [[ "$fl_debug" -eq 1 ]]; then
-        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_configuration_file" "$squib_named_pipe" | tee "$dest"
+        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_named_pipe" | tee "$dest"
     else
-        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_configuration_file" "$squib_named_pipe" > "$dest"
+        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_named_pipe" > "$dest"
     fi
 
     if [[ $? -ne 0 ]]; then
@@ -614,7 +680,7 @@ build::all() {
     # -type f ( -name "*.html" -o -name "*.md" ) -print
     # Only look for files that have extensions '.html' or '.md'
 
-    readonly squib_posts=($(find posts -type f \( -name "*.html" -o -name "*.md" \) -print | sort -z))
+    readonly squib_posts=($(find posts -type f \( -name "*.html" -o -name "*.md" \) -print | sort -r))
 
     readonly squib_post_html_tags="<ul>$(post::render_links)</ul>"
     if [[ $? -ne 0 ]]; then
@@ -632,7 +698,7 @@ build::all() {
 main() {
     declare -a action
 
-    util::skim_conf "$squib_configuration_file"
+    squib::parse_ini "$squib_configuration_file"
     squib::parse_args "$@"
 
     case "$action" in
