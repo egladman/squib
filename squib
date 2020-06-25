@@ -12,7 +12,7 @@ readonly squib_directory_structure=(
 )
 
 # Can be overridden in 'squib.ini'
-squib_crunchwrap_command="./crunchwrap"
+squib_crunchwrap_command="/usr/local/bin/cw"
 squib_markdown_command="/usr/bin/Markdown.pl"
 squib_named_pipe="squib.fifo"
 squib_build_dir="site"
@@ -538,9 +538,9 @@ page::render() {
 
     # TODO: remmove 'cat' dependency
     if [[ "$fl_debug" -eq 1 ]]; then
-        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_named_pipe" | tee "$dest"
+        cat "$layout" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" | tee "$dest"
     else
-        cat "$layout" | "$squib_crunchwrap_command" -i "$squib_named_pipe" > "$dest"
+        cat "$layout" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" > "$dest"
     fi
 
     if [[ $? -ne 0 ]]; then
