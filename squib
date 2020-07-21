@@ -81,6 +81,30 @@ util::flushpipe() {
     >"$1"
 }
 
+util::flushvar() {
+    # Usage: util::flush foo bar baz
+    # Empty array, string, and set integers to zero
+
+    local variables=("$@")
+    for var in "${variables[@]}"; do
+        local type="$(_type $var)"
+        case "$type" in
+            array)
+                eval "$var=()"
+                ;;
+            string)
+                eval "$var="
+                ;;
+            int)
+                eval "$var=0"
+                ;;
+            *)
+                _die "Unsupported. Variable: '$var' is type: '$type'"
+                ;;
+        esac
+    done
+}
+
 util::basename() {
     # Usage: basename "path" ["suffix"]
     # Taken straight from https://github.com/dylanaraps/pure-bash-bible
@@ -343,9 +367,16 @@ post::render_links() {
             return
         fi
 
-        for var in "${front_matter[@]}"; do
-            [[ "$var" == title\=* ]] && eval "$var"
-        done
+        # We really only need 'title' and 'draft', but we eval everything just
+        # incase we need it in the future
+        eval "${front_matter[@]}"
+
+        if [[ "$draft" = "true" ]]; then
+            unset layout title tags draft author # Clear front matter variables from previous posts
+
+            log::warn "'draft' set to 'true'. Skipping '$post'"
+            continue
+        fi
 
         if [[ -z "$title" ]]; then
             log::warn "'title' is not defined in front matter of post '$post'"
@@ -368,7 +399,7 @@ post::render_links() {
 
         #post_html_tags+=("<li><h3><a href=\"$post_relative_url\">$title</a></h3><span>$post_timestamp_pretty</span></li>")
         post_html_tags+=("<li><span>$post_timestamp_pretty</span> &raquo; <a href=\"$post_relative_url\">$title</a></li>")
-        unset title
+        unset layout title tags draft author # Clear front matter variables from previous posts
     done
 
     printf '%s\n' "${post_html_tags[@]}"
@@ -480,8 +511,6 @@ page::render() {
     # This is a roundabout way that avoids spawning processes like 'basename'
     [[ "$dest" == *.md ]] && dest=$(string::rstrip "$dest" ".md").html
 
-    log::std "Rendering '$src' to '$dest'"
-
     # We can to use '\n' as a delimiter otherwise variables that contain spaces
     # would be broken up. There are certainly ways to circumvent this, I just
     # don't care to put in the extra effort. Like who the fuck needs multi-line
@@ -498,7 +527,13 @@ page::render() {
     [[ -z "$layout" ]] && layout="layouts/default.html"
 
     log::debug "file '$src',  front matter: '${front_matter[@]}'"
+    unset layout title tags draft author # Clear front matter variables from previous posts
     eval "${front_matter[@]}"
+
+    # Don't render post if it's a draft
+    [[ "$draft" = "true" ]] && return
+
+    log::std "Rendering '$src' to '$dest'"
 
     local front_matter_line_count=$((${#front_matter[@]}+2))
     # We add '2' to account for each triple hyphen ( i.e. --- ) that denotes the
@@ -577,6 +612,7 @@ post::collect_metadata() {
     meta_variables+=(
         "__title__=\"undefined\""
         "__author__=\"undefined\""
+        "__draft__=\"undefined\""
         "__tags__=\"undefined\""
     )
 
@@ -590,6 +626,10 @@ post::collect_metadata() {
             author\=*)
                 local val="${var:7}"
                 meta_variables+=("__author__=${val:=undefined}")
+                ;;
+            draft\=*)
+                local val="${var:6}"
+                meta_variables+=("__draft__=${val:=undefined}")
                 ;;
             tags\=*)
                 local val="${var:5}"
