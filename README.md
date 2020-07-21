@@ -36,6 +36,10 @@ Shows help
 squib --help
 ```
 
+### Example Sites
+
+- [egladman/egladman.github.io](https://github.com/egladman/egladman.github.io)
+
 ### Tips
 
 Use github pages? Don't forget to configure the baseurl.

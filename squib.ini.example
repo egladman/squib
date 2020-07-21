@@ -1,0 +1,20 @@
+[squib]
+site_url = "example.tld"
+base_url = ""
+pagination_url = "{{ squib_base_url }}/blog"
+;crunchwrap_command = "/usr/local/bin/cw"
+;markdown_command = "/usr/bin/Markdown.pl"
+;pagination_url="/blog"
+;build_dir = "site"
+;watch_interval = 5
+;named_pipe = "squib.fifo"
+
+[ExampleA]
+foo = "abcdefg"
+bar = "hijklmn"
+baz = "opqrstu"
+
+[ExampleB]
+paragraph = The quick brown fox \
+jumps over the lazy dog
+alphabet = "{{ ExampleA_foo }}{{ ExampleA_bar }}{{ ExampleA_baz }}vwxyz"
