@@ -397,8 +397,7 @@ post::render_links() {
         # TODO: get rid of gnu date dependency
         post_timestamp_pretty=$(date -d "$post_timestamp" "+%B %d, %Y")
 
-        #post_html_tags+=("<li><h3><a href=\"$post_relative_url\">$title</a></h3><span>$post_timestamp_pretty</span></li>")
-        post_html_tags+=("<li><span>$post_timestamp_pretty</span> &raquo; <a href=\"$post_relative_url\">$title</a></li>")
+        post_html_tags+=("<li><span>$post_timestamp_pretty</span><a href=\"$post_relative_url\">$title</a></li>")
         unset layout title tags draft author # Clear front matter variables from previous posts
     done
 
