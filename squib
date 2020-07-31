@@ -194,7 +194,11 @@ squib::create_scaffold() {
 }
 
 squib::create_ini() {
-cat > "$squib_configuration_file" << "EOF"
+# 'read' returns a failure return code (1) since the null-byte delimiter is
+# not read before EOF. So me must use '|| true'
+
+local content
+IFS='' read -r -d '' content <<"EOF" || true
 [squib]
 site_url = "example.tld"
 base_url = ""
@@ -206,6 +210,8 @@ pagination_post_html = "<li><span>\"\$post_timestamp_pretty\"</span><a href=\"\$
 ;watch_interval = 5
 ;named_pipe = "squib.fifo"
 EOF
+
+printf '%s\n' "$content" > "$squib_configuration_file"
 }
 
 squib::parse_ini() {
@@ -648,11 +654,10 @@ page::render() {
     printf '%s\n' "${extra_variables[@]}" "$(squib::parse_ini "$squib_configuration_file" false)" > "$squib_named_pipe" &
     #squib::parse_ini "$squib_configuration_file" >> "$squib_named_pipe" &
 
-    # TODO: remmove 'cat' dependency
     if [[ "$fl_debug" -eq 1 ]]; then
-        cat "$layout" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" | tee "$dest"
+        printf '%s\n' "$(<"$layout")" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" | tee "$dest"
     else
-        cat "$layout" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" > "$dest"
+        printf '%s\n' "$(<"$layout")" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" > "$dest"
     fi
 
     if [[ $? -ne 0 ]]; then
@@ -799,7 +804,7 @@ render::all() {
 
     for file in "${squib_pages_copy[@]}"; do
         local dest=""
-        meta_variables=()
+        meta_variables=() # Global
 
         if [[ " ${squib_posts[@]} " =~ " ${file} " ]]; then # it's a post
             readarray -t meta_variables < <(post::collect_metadata "$file")
