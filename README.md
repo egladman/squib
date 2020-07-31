@@ -57,7 +57,7 @@ squib build --watch --baseurl $(pwd)/site
 
 Spin up a local server with a perl one-liner. If you've opted to use Markdown then you're good to go.
 ```
-perl -MHTTP::Server::Brick -e '$s=HTTP::Server::Brick->new(port=>8080); $s->mount("/"=>{path=>"site"}); $s->start'
+perl -MHTTP::Server::Brick -e '$s=HTTP::Server::Brick->new(port=>8080); $s->mount("/"=>{path=>"_site"}); $s->start'
 ```
 
 *Note:* The easiest way to install module `HTTP::Server::Brick` is with `cpanm` or `cpan`
