@@ -8,17 +8,17 @@ set -o pipefail
 readonly squib_version="0.1.0"
 readonly squib_configuration_file="squib.ini"
 readonly squib_directory_structure=(
-    "layouts"
-    "public"
-    "posts"
-    "includes"
+    "_layouts"
+    "_public"
+    "_posts"
+    "_includes"
 )
 
 # Can be overridden in 'squib.ini'
 squib_crunchwrap_command="/usr/local/bin/cw"
 squib_markdown_command="/usr/bin/Markdown.pl"
 squib_named_pipe="squib.fifo"
-squib_build_dir="site"
+squib_build_dir="_site"
 squib_watch_interval=5 # Seconds
 squib_pagination_url="/blog"
 
@@ -189,8 +189,23 @@ squib::create_scaffold() {
     # Assumes working directory if path isn't provided
 
     for d in "${squib_directory_structure[@]}"; do
-        mkdir "$1"/"$d"
+        mkdir "$base_dir"/"$d"
     done
+}
+
+squib::create_ini() {
+cat > "$squib_configuration_file" << "EOF"
+[squib]
+site_url = "example.tld"
+base_url = ""
+pagination_url = "{{ squib_base_url }}/blog"
+pagination_post_html = "<li><span>\"\$post_timestamp_pretty\"</span><a href=\"\$post_relative_url\">\"\$title\"</a></li>"
+;crunchwrap_command = "/usr/local/bin/cw"
+;markdown_command = "/usr/bin/Markdown.pl"
+;build_dir = "_site"
+;watch_interval = 5
+;named_pipe = "squib.fifo"
+EOF
 }
 
 squib::parse_ini() {
@@ -306,6 +321,7 @@ squib::parse_args() {
                 ;;
             i|init)
                 squib::create_scaffold "$2"
+                squib::create_ini
                 exit 0
                 ;;
             *)
@@ -370,8 +386,8 @@ post::construct_url() {
     local regex_valid_date="^([0-9]{4})\-([0-9]{2})\-([0-9]{2})$"
 
     # Posts must adhere to either of the two naming conventions:
-    # posts/YYYY-MM-DD-hello-world.md
-    # posts/YYYY-MM-DD-hello-world.html
+    # _posts/YYYY-MM-DD-hello-world.md
+    # _posts/YYYY-MM-DD-hello-world.html
 
     # post::construct_url splits a post's filename into two parts:
     # ---------------------------------------------------------------------------
@@ -479,7 +495,7 @@ watch::generate_hashes() {
     fi
 
     declare -a files
-    files=($(find * \( -name site -o -name .git -o -name README.md \) -prune -o -type f -print))
+    files=($(find * \( -name _site -o -name .git -o -name README.md \) -prune -o -type f -print))
 
     for file in "${files[@]}"; do
         watch::generate_hash "$file"
@@ -521,7 +537,7 @@ watch::generate_hash() {
 watch::run() {
     # Usage watch::run "path"
     case "$1" in
-        public/*)
+        _public/*)
             copy:all
             ;;
         *.html|*.md)
@@ -587,8 +603,8 @@ page::render() {
 
     # layout
     # Variable is sourced from the file's front matter. If 'layout' isn't
-    # specified default to 'layouts/default.html'
-    [[ -z "$layout" ]] && layout="layouts/default.html"
+    # specified default to '_layouts/default.html'
+    [[ -z "$layout" ]] && layout="_layouts/default.html"
 
     log::debug "file '$src',  front matter: '${front_matter[@]}'"
     unset layout title tags draft author # Clear front matter variables from previous posts
@@ -764,24 +780,24 @@ prep::all() {
 }
 
 copy::all() {
-    # Copy all static files in dir 'public'
-    cp -r public/* "$squib_build_dir"/
+    # Copy all static files in dir '_public'
+    cp -r _public/* "$squib_build_dir"/
 }
 
 build::all() {
     # Terminology
-    # Any '.html' or '.md' file that resides outside of directories: 'layouts', 'includes' is called a 'page'.
+    # Any '.html' or '.md' file that resides outside of directories: '_layouts', '_includes' is called a 'page'.
     # A 'post' is a 'page', but a 'page' is not a 'post'.
 
-    readonly squib_pages=($(find * \( -name layouts -o -name includes -o -name public -o -name site -o -name .git \) -prune -o -type f \( -name "*.html" -o -name "*.md" \) -print))
-    # ( -name layouts -o -name includes -o -name public -o -name site -o -name .git ) -prune
+    readonly squib_pages=($(find * \( -name _layouts -o -name _includes -o -name _public -o -name _site -o -name .git \) -prune -o -type f \( -name "*.html" -o -name "*.md" \) -print))
+    # ( -name _layouts -o -name _includes -o -name _public -o -name _site -o -name .git ) -prune
     # Don't traverse the following  directories:
-    # layouts, includes, .git
+    # _layouts, _includes, .git
 
     # -type f ( -name "*.html" -o -name "*.md" ) -print
     # Only look for files that have extensions '.html' or '.md'
 
-    readonly squib_posts=($(find posts -type f \( -name "*.html" -o -name "*.md" \) -print | sort -r))
+    readonly squib_posts=($(find _posts -type f \( -name "*.html" -o -name "*.md" \) -print | sort -r))
 
     readonly squib_post_html_tags="<ul>$(post::render_links)</ul>"
     if [[ $? -ne 0 ]]; then
@@ -798,7 +814,9 @@ build::all() {
 main() {
     declare -a action
 
-    squib::parse_ini "$squib_configuration_file"
+    if [[ -f "$squib_configuration_file" ]]; then
+        squib::parse_ini "$squib_configuration_file"
+    fi
     squib::parse_args "$@"
 
     case "$action" in
