@@ -642,7 +642,7 @@ page::render() {
     declare -a extra_variables
     extra_variables+=("__content__=\"$content_base64\"")
     extra_variables+=("__posts_all__=\"$squib_post_html_tags\"")
-    [[ -v metadata_variables ]] && extra_variables+=("${metadata_variables[@]}")
+    [[ -v meta_variables ]] && extra_variables+=("${meta_variables[@]}")
     [[ -v base_url_override ]] && extra_variables+=("base_url=\"$squib_base_url\"")
 
     printf '%s\n' "${extra_variables[@]}" "$(squib::parse_ini "$squib_configuration_file" false)" > "$squib_named_pipe" &
@@ -662,31 +662,34 @@ page::render() {
 }
 
 post::collect_metadata() {
-    # Usage: squib::post_metadata "/path/to/post"
-    # Print post meta data in a format that's easily consumable
+    # Usage: post::collect_metadata "/path/to/post"
+    # Print post metadata in a format that's easily consumable
+
+    # Difference betweeen post::collect_metadata AND page::collect_metadata
+    # In it's current state the functions are rather similar. They're broken up,
+    # because I suspect over time they'll deviate heavily from one another.
 
     local post="$1"
 
-    declare -a meta_post_variables
+    declare -a self_meta_variables
 
     # __published_url__
-    meta_variables+=("__published_url__=\"$(post::lookup_url)\"")
+    self_meta_variables+=("__published_url__=\"$(post::lookup_url)\"")
 
     # __date__
     local tmp
     tmp=$(util::basename "$file")
     tmp=$(date -d "${tmp:0:10}" "+%B %d, %Y")
-    meta_variables+=("__date__=\"$tmp\"")
+    self_meta_variables+=("__date__=\"$tmp\"")
     unset tmp
 
-    # __title__ AND __author__
-    readarray -t front_matter_variables < <(page::collect_front_matter "$post")
+    readarray -t self_front_matter_variables < <(page::collect_front_matter "$post")
     if [[ $? -ne 0 ]]; then
         log::warn "function 'page::collect_front_matter' returned non-zero code."
         return 1
     fi
 
-    meta_variables+=(
+    self_meta_variables+=(
         "__title__=\"undefined\""
         "__author__=\"undefined\""
         "__draft__=\"undefined\""
@@ -694,23 +697,23 @@ post::collect_metadata() {
     )
 
     # Override variables that are defined in the front matter
-    for var in "${front_matter_variables[@]}"; do
+    for var in "${self_front_matter_variables[@]}"; do
         case "$var" in
             title\=*)
                 local val="${var:6}"
-                meta_variables+=("__title__=${val:=undefined}")
+                self_meta_variables+=("__title__=${val:=undefined}")
                 ;;
             author\=*)
                 local val="${var:7}"
-                meta_variables+=("__author__=${val:=undefined}")
+                self_meta_variables+=("__author__=${val:=undefined}")
                 ;;
             draft\=*)
                 local val="${var:6}"
-                meta_variables+=("__draft__=${val:=undefined}")
+                self_meta_variables+=("__draft__=${val:=undefined}")
                 ;;
             tags\=*)
                 local val="${var:5}"
-                meta_variables+=("__tags__=${val:=undefined}")
+                self_meta_variables+=("__tags__=${val:=undefined}")
                 ;;
         esac
     done
@@ -722,7 +725,47 @@ post::collect_metadata() {
     # __author__
     # __tags__
 
-    printf '%s\n' "${meta_variables[@]}"
+    printf '%s\n' "${self_meta_variables[@]}"
+}
+
+page::collect_metadata() {
+    # Usage: page::collect_metadata "/path/to/post"
+    # Print page metadata in a format that's easily consumable
+
+    # Path to Page
+    local page="$1"
+
+    declare -a self_meta_variables
+
+    # __published_url__
+    self_meta_variables+=("__published_url__=\"$page\"")
+
+    # __title__
+    readarray -t self_front_matter_variables < <(page::collect_front_matter "$page")
+    if [[ $? -ne 0 ]]; then
+        log::warn "function 'page::collect_front_matter' returned non-zero code."
+        return 1
+    fi
+
+    self_meta_variables+=(
+        "__title__=\"undefined\""
+    )
+
+    # Override variables that are defined in the front matter
+    for var in "${self_front_matter_variables[@]}"; do
+        case "$var" in
+            title\=*)
+                local val="${var:6}"
+                self_meta_variables+=("__title__=${val:=undefined}")
+                ;;
+        esac
+    done
+
+    # The following variables are made available inside posts:
+    # __published_url__
+    # __title__
+
+    printf '%s\n' "${self_meta_variables[@]}"
 }
 
 render::all() {
@@ -756,8 +799,10 @@ render::all() {
 
     for file in "${squib_pages_copy[@]}"; do
         local dest=""
+        meta_variables=()
+
         if [[ " ${squib_posts[@]} " =~ " ${file} " ]]; then # it's a post
-            readarray -t metadata_variables < <(post::collect_metadata "$file")
+            readarray -t meta_variables < <(post::collect_metadata "$file")
             if [[ $? -ne 0 ]]; then
                 log::warn "function 'post::collect_metadata' returned non-zero code."
                 return 1
@@ -768,9 +813,14 @@ render::all() {
                 log::warn "function 'post::construct_url' returned non-zero code."
                 return 1
             fi
+        else
+            readarray -t meta_variables < <(page::collect_metadata "$file")
         fi
         page::render "$file" "$dest"
-        unset metadata_variables
+
+        # This is a global variable. So it's super important that we clear it
+        # before iterating through the next file
+        unset meta_variables
     done
 }
 
