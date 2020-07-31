@@ -146,13 +146,33 @@ util::urlencode() {
             [a-zA-Z0-9.~_-])
                 printf '%s' "$_"
                 ;;
-
             *)
                 printf '%%%02X' "'$_"
                 ;;
         esac
     done
     printf '\n'
+}
+
+util::escape_chars() {
+    # Usage: util::escape_chars '<' '>' "<h1>hello world</h1>"
+
+    # Escape specific characters with backslashes.
+    if [[ -z "$2" ]]; then
+        log::warn "function ${FUNCNAME[0]} expects more than one argument"
+        return 1
+    fi
+
+    local tmp=("$@")
+    local chars=("${tmp[@]::${#tmp[@]}-1}")
+    local string="${tmp[-1]}"
+    unset tmp
+
+    for char in "${chars[@]}"; do
+        string="${string//$char/\\$char}"
+    done
+
+    printf '%s\n' "$string"
 }
 
 # TODO: remove 'cut' dependency
@@ -215,6 +235,7 @@ squib::parse_ini() {
         esac
 
         if [[ ! "$line" =~ $regex_contains_variable ]] || [[ -n "$multi_line" ]]; then
+            log::debug "${FUNCNAME[0]}:  Skipping '$line'"
             continue
         fi
 
@@ -240,7 +261,10 @@ squib::parse_ini() {
         local declaration
         declaration="$(printf '%b\n' "$name=$val")"
 
-        [[ "$2" == "false" ]] || eval "$declaration"
+        if [[ ! "$2" == "false" ]]; then
+            eval "$declaration" || log::fatal "Failed to evaluate '$name'"
+        fi
+
         printf '%s\n' "$declaration"
     done < "$1"
 
@@ -369,13 +393,13 @@ post::construct_url() {
     # Using substrings is prefered over splitting 'path' into an array delimited
     # by '-', since the slug could contain additional hyphens.
 
-    local post_timestamp=${post:0:10} # The timestamp length is fixed.
+    local post_timestamp="${post:0:10}" # The timestamp length is fixed.
     if [[ ! "$post_timestamp" =~ ^([0-9]{4})\-([0-9]{2})\-([0-9]{2}) ]]; then
         log::warn "post '$post' is not formatted correctly. Filename must be prefixed with: 'YYYY-MM-DD-'"
         return 1
     fi
 
-    local post_slug=${post:11} # TODO: downcase and run against urlencode
+    local post_slug="${post:11}"
     [[ "$post_slug" == *.md ]] && post_slug=$(string::rstrip "$post_slug" ".md").html # duplicate code
     post_slug="$(util::urlencode ${post_slug,,})" # Downcase, and encode
 
@@ -423,7 +447,23 @@ post::render_links() {
         # TODO: get rid of gnu date dependency
         post_timestamp_pretty=$(date -d "$post_timestamp" "+%B %d, %Y")
 
-        post_html_tags+=("<li><span>$post_timestamp_pretty</span><a href=\"$post_relative_url\">$title</a></li>")
+        if [[ -n "$squib_pagination_post_html" ]]; then
+            local tmp
+            tmp="$(util::escape_chars '>' '<' "$squib_pagination_post_html")"
+            if [[ $? -ne 0 ]]; then
+                log::fatal "function 'util::escape_chars' returned non-zero code."
+            fi
+
+            # Using 'eval' in conjunction with printf is an absolute headache.
+            # In this scenario I prefer to use 'echo', since I require no
+            # special formatting.
+            tmp=$(eval echo "$tmp")
+            post_html_tags+=("$tmp")
+            unset tmp
+        else
+            post_html_tags+=("<li><span>$post_timestamp_pretty</span><a href=\"$post_relative_url\">$title</a></li>")
+        fi
+
         unset layout title tags draft author # Clear front matter variables from previous posts
     done
 
@@ -591,9 +631,6 @@ page::render() {
 
     printf '%s\n' "${extra_variables[@]}" "$(squib::parse_ini "$squib_configuration_file" false)" > "$squib_named_pipe" &
     #squib::parse_ini "$squib_configuration_file" >> "$squib_named_pipe" &
-
-    printf '%s\n' "${extra_variables[@]}" > "/tmp/test"
-    squib::parse_ini "$squib_configuration_file" >> "/tmp/test"
 
     # TODO: remmove 'cat' dependency
     if [[ "$fl_debug" -eq 1 ]]; then
