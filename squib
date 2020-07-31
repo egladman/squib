@@ -198,7 +198,7 @@ cat > "$squib_configuration_file" << "EOF"
 [squib]
 site_url = "example.tld"
 base_url = ""
-pagination_url = "{{ squib_base_url }}/blog"
+pagination_url = "/blog"
 pagination_post_html = "<li><span>\"\$post_timestamp_pretty\"</span><a href=\"\$post_relative_url\">\"\$title\"</a></li>"
 ;crunchwrap_command = "/usr/local/bin/cw"
 ;markdown_command = "/usr/bin/Markdown.pl"
