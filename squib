@@ -1,9 +1,8 @@
 #!/bin/bash
 
-set -o errexit
-set -o pipefail
-
 # Squib - A Static Site Generator
+
+set -o pipefail
 
 readonly squib_version="0.1.0"
 readonly squib_configuration_file="squib.ini"
@@ -44,24 +43,24 @@ Options:
 Report issues at https://github.com/egladman/squib/issues
 "
 
-log::std() {
-    # Usage: log::std "string"
+log::print() {
+    # Usage: log::print "string"
     printf '%b\n' "${0##*/}: $*" 1>&2
 }
 
 log::warn() {
     # Usage: log::warn "Will Robinson"
-    log::std "${clr_yellow}DANGER:${clr_none} $*"
+    log::print "${clr_yellow}DANGER:${clr_none} $*"
 }
 
 log::error() {
     # Usage: log::error "Whoooops something went wrong"
-    log::std "${clr_red}ERROR:${clr_none} $*"
+    log::print "${clr_red}ERROR:${clr_none} $*"
 }
 
 log::fatal() {
     # Usage: log::fatal "Whoooops something went wrong"
-    log::std "${clr_red}FATAL ERROR:${clr_none} $*"
+    log::print "${clr_red}FATAL ERROR:${clr_none} $*"
 
     kill $$ &> /dev/null
 }
@@ -69,7 +68,7 @@ log::fatal() {
 log::debug() {
     # Usage: log::debug "string"
     if [[ $fl_debug -eq 1 ]]; then
-        log::std "${clr_cyan}DEBUG:${clr_none} $*"
+        log::print "${clr_cyan}DEBUG:${clr_none} $*"
     fi
 }
 
@@ -94,7 +93,41 @@ util::mkpipe() {
 }
 
 util::flushpipe() {
+    # Usage: util::flushpipe "/path/to/pipe"
+    # Emptys file
     >"$1"
+}
+
+util::type() {
+    # Usage util::type USER
+    # Print common variable types given the variable name
+
+    local variable=$(declare -p "$1")
+    [[ $? -eq 0 ]] || return
+
+    local regex='^declare -n [^=]+=\"([^\"]+)\"$'
+
+    while [[ "$variable" =~ $regex ]]; do
+        variable=$(declare -p ${BASH_REMATCH[1]})
+    done
+
+    case "${variable#declare -}" in
+        a*)
+            printf '%s\n' "array"
+            ;;
+        A*)
+            printf '%s\n' "associative_array"
+            ;;
+        i*)
+            printf '%s\n' "int"
+            ;;
+        x*)
+            printf '%s\n' "export"
+            ;;
+        *)
+            printf '%s\n' "other"
+            ;;
+    esac
 }
 
 util::flushvar() {
@@ -103,21 +136,25 @@ util::flushvar() {
 
     local variables=("$@")
     for var in "${variables[@]}"; do
-        local type="$(_type $var)"
+        local type="$(util::type $var)"
+        local declaration
         case "$type" in
             array)
-                eval "$var=()"
+                declaration="$var=()"
                 ;;
             string)
-                eval "$var="
+                declaration="$var=''"
                 ;;
             int)
-                eval "$var=0"
+                declaration="$var=0"
                 ;;
             *)
-                _die "Unsupported. Variable: '$var' is type: '$type'"
+                return 1
                 ;;
         esac
+
+        eval "$declaration"
+        unset declaration
     done
 }
 
@@ -156,10 +193,12 @@ util::urlencode() {
 
 util::escape_chars() {
     # Usage: util::escape_chars '<' '>' "<h1>hello world</h1>"
+    # Escapes specified characters with backslashes.
+    # Pretty dumb implementation. For example it won't properly escape an
+    # actual '\'.
 
-    # Escape specific characters with backslashes.
     if [[ -z "$2" ]]; then
-        log::warn "function ${FUNCNAME[0]} expects more than one argument"
+        log::error "function '${FUNCNAME[0]}' expects more than one argument"
         return 1
     fi
 
@@ -211,7 +250,10 @@ pagination_post_html = "<li><span>\"\$post_timestamp_pretty\"</span><a href=\"\$
 ;named_pipe = "squib.fifo"
 EOF
 
-printf '%s\n' "$content" > "$squib_configuration_file"
+printf '%s\n' "$content" > "$squib_configuration_file" || {
+    log::error "Failed to create $squib_configuration_file"
+    return 1
+}
 }
 
 squib::parse_ini() {
@@ -256,7 +298,7 @@ squib::parse_ini() {
         esac
 
         if [[ ! "$line" =~ $regex_contains_variable ]] || [[ -n "$multi_line" ]]; then
-            log::debug "${FUNCNAME[0]}:  Skipping '$line'"
+            # Skip if multi-line variable or does not match variable syntax
             continue
         fi
 
@@ -283,7 +325,9 @@ squib::parse_ini() {
         declaration="$(printf '%b\n' "$name=$val")"
 
         if [[ ! "$2" == "false" ]]; then
-            eval "$declaration" || log::fatal "Failed to evaluate '$name'"
+            eval "$declaration" || {
+                log::fatal "Function '${FUNCNAME[0]}' failed to evaluate variable '$name'"
+            }
         fi
 
         printf '%s\n' "$declaration"
@@ -293,6 +337,7 @@ squib::parse_ini() {
 
 squib::parse_args() {
     # Usage: squib::parse_args
+    # Parse CLI arguments
 
     while [[ "$#" -gt 0 ]]; do
         case "$1" in
@@ -335,7 +380,8 @@ squib::parse_args() {
                     printf '%s\n' "$usage"
                     exit 1
                 fi
-                # Anything that isn't a flag is considered an 'action'
+                # Anything that isn't a flag is considered an 'action'. There
+                # can only be ONE action
                 action+=("$1")
         esac
         shift
@@ -347,17 +393,17 @@ page::collect_front_matter() {
     # Print a file's front matter
 
     local variables=()
-    local i=0
+    declare -i j=0
 
     while IFS='' read -r line; do
-        i=$((i+1))
-        if [[ $i -eq 1 ]]; then
+        j=$((j+1))
+        if [[ $j -eq 1 ]]; then
             case "$line" in
                 "---")
                     continue
                     ;;
                 *)
-                    log::warn "Skipping '$1'. No front matter found."
+                    log::warn "Skipping page '$1'. No front matter found."
                     return 1
                     ;;
             esac
@@ -377,7 +423,10 @@ post::lookup_url() {
         declare -x -A post_lookup_table # Associative array
 
         for post in "${squib_posts[@]}"; do
+            declare -i rc
             post_url=$(post::construct_url "$post")
+            rc=$?
+            [[ $? -ne 0 ]] && return $rc
 
             log::debug "Mapping post '$post' to url '$post_url'"
             post_lookup_table["$post"]="$post_url"
@@ -388,7 +437,12 @@ post::lookup_url() {
 }
 
 post::construct_url() {
+    declare -i rc
+
     local post=$(util::basename "$1")
+    rc=$?
+    [[ $? -ne 0 ]] && return $rc
+
     local regex_valid_date="^([0-9]{4})\-([0-9]{2})\-([0-9]{2})$"
 
     # Posts must adhere to either of the two naming conventions:
@@ -417,16 +471,24 @@ post::construct_url() {
 
     local post_timestamp="${post:0:10}" # The timestamp length is fixed.
     if [[ ! "$post_timestamp" =~ ^([0-9]{4})\-([0-9]{2})\-([0-9]{2}) ]]; then
-        log::warn "post '$post' is not formatted correctly. Filename must be prefixed with: 'YYYY-MM-DD-'"
+        log::error "post '$post' is not formatted correctly. Filename must be prefixed with: 'YYYY-MM-DD-'"
         return 1
     fi
 
     local post_slug="${post:11}"
-    [[ "$post_slug" == *.md ]] && post_slug=$(string::rstrip "$post_slug" ".md").html # duplicate code
+    if [[ "$post_slug" == *.md ]]; then # transform url
+        post_slug=$(string::rstrip "$post_slug" ".md").html # duplicate code
+        rc=$?
+        [[ $rc -ne 0 ]] && return $rc
+    fi
+
     post_slug="$(util::urlencode ${post_slug,,})" # Downcase, and encode
+    rc=$?
+    [[ $rc -ne 0 ]] && return $rc
 
     # /year/month/day/slug.html
-    printf '%s\n' "${squib_base_url}${squib_pagination_url}/${post_timestamp:0:4}/${post_timestamp:5:2}/${post_timestamp:8:2}/$post_slug"
+    local url="${squib_base_url}${squib_pagination_url}/${post_timestamp:0:4}/${post_timestamp:5:2}/${post_timestamp:8:2}/$post_slug"
+    printf '%s\n' "$url"
 }
 
 post::render_links() {
@@ -436,7 +498,7 @@ post::render_links() {
     for post in "${squib_posts[@]}"; do
         readarray -t front_matter < <(page::collect_front_matter "$post")
         if [[ $? -ne 0 ]]; then
-            log::warn "function 'page::collect_front_matter' returned non-zero code."
+            log::error "function 'page::collect_front_matter' returned non-zero code."
             return 1
         fi
 
@@ -447,18 +509,21 @@ post::render_links() {
         if [[ "$draft" = "true" ]]; then
             unset layout title tags draft author # Clear front matter variables from previous posts
 
-            log::warn "'draft' set to 'true'. Skipping '$post'"
+            log::warn "Skipping post '$post'. 'draft' set to 'true'"
             continue
         fi
 
         if [[ -z "$title" ]]; then
-            log::warn "'title' is not defined in front matter of post '$post'"
+            log::error "'title' is not defined in front matter of post '$post'"
             return 1
         fi
 
+        declare -i rc
         post_relative_url=$(post::construct_url "$post")
-        if [[ $? -ne 0 ]]; then
-            log::fatal "function 'post::construct_url' returned non-zero code."
+        rc=$?
+        if [[ $rc -ne 0 ]]; then
+            log::error "function 'post::construct_url' returned non-zero code."
+            return 1
         fi
 
         local tmp post_timestamp
@@ -472,8 +537,10 @@ post::render_links() {
         if [[ -n "$squib_pagination_post_html" ]]; then
             local tmp
             tmp="$(util::escape_chars '>' '<' "$squib_pagination_post_html")"
-            if [[ $? -ne 0 ]]; then
-                log::fatal "function 'util::escape_chars' returned non-zero code."
+            rc=$?
+            if [[ $rc -ne 0 ]]; then
+                log::error "function 'util::escape_chars' returned non-zero code."
+                return $rc
             fi
 
             # Using 'eval' in conjunction with printf is an absolute headache.
@@ -483,6 +550,7 @@ post::render_links() {
             post_html_tags+=("$tmp")
             unset tmp
         else
+            # Default html if nothing is specified in $squib_configuration_file
             post_html_tags+=("<li><span>$post_timestamp_pretty</span><a href=\"$post_relative_url\">$title</a></li>")
         fi
 
@@ -496,15 +564,20 @@ watch::generate_hashes() {
     # Usage: watch::generate_hashes
 
     if [[ -n "$1" ]]; then
-        log::warn "function '${FUNCNAME[0]}' does not support arguments."
+        log::error "function '${FUNCNAME[0]}' does not support arguments."
         return 1
     fi
 
     declare -a files
+    declare -i rc
     files=($(find * \( -name _site -o -name .git -o -name README.md \) -prune -o -type f -print))
+    rc=$?
+    [[ $rc -ne 0 ]] && return $rc
 
     for file in "${files[@]}"; do
-        watch::generate_hash "$file"
+        watch::generate_hash "$file" || {
+            log::error "Failed to generate hash for file '$file'"
+        }
     done
 }
 
@@ -535,8 +608,13 @@ watch::generate_hash() {
     # Side note: crc32 is a tad faster than sha1, but it's a seperate package and
     # doesn't come bundled with coreutils
 
-    local sha1=$(util::generate_sha1 "$1")
-    file_hashes["$1"]="$sha1" # Array is declared in function watch::all
+    declare -i rc
+    local sha1
+    sha1=$(util::generate_sha1 "$1")
+    rc=$?
+    [[ $rc -ne 0 ]] && return $rc
+
+    file_hashes["$1"]="$sha1" # Global. Array is declared in function watch::all
     log::debug "file: '$1', sha1sum: '$sha1'"
 }
 
@@ -553,7 +631,7 @@ watch::run() {
             render::all
             ;;
         *)
-            log::warn "Ignoring '$1'"
+            log::error "Function '${FUNCNAME[0]}' passed Unsupported file '$1'"
             return 1
             ;;
     esac
@@ -563,7 +641,7 @@ watch::all() {
     declare -A file_hashes
     watch::generate_hashes # Seed file_hashes
 
-    log::std "watching..."
+    log::print "watching..."
     while sleep $squib_watch_interval; do
         for key in ${!file_hashes[@]}; do
             local val="${file_hashes[${key}]}"
@@ -571,9 +649,9 @@ watch::all() {
 
             if [[ "$val" != "$sha1" ]]; then # Update stored sha1 with new value
                 file_hashes["$key"]="$sha1"
-                log::std "file '$key' modified.\nold: $val\nnew: $sha1"
+                log::print "file '$key' modified.\nold: $val\nnew: $sha1"
 
-                local rc
+                declare -i rc
                 watch::run "$key" && rc=$?
                 [[ $rc -ne 0 ]] && log::warn "'watch::run $key' returned code: $rc"
 
@@ -601,10 +679,12 @@ page::render() {
     # would be broken up. There are certainly ways to circumvent this, I just
     # don't care to put in the extra effort. Like who the fuck needs multi-line
     # titles!?
+    declare -i rc
     readarray -t front_matter < <(page::collect_front_matter "$src")
-    if [[ $? -ne 0 ]]; then
-        log::warn "function 'page::collect_front_matter' returned non-zero code."
-        return
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+        log::error "Function 'page::collect_front_matter' returned non-zero code: $rc."
+        return $rc
     fi
 
     # layout
@@ -619,17 +699,17 @@ page::render() {
     # Don't render post if it's a draft
     [[ "$draft" = "true" ]] && return
 
-    log::std "Rendering '$src' to '$dest'"
+    log::print "Rendering '$src' to '$dest'"
 
     local front_matter_line_count=$((${#front_matter[@]}+2))
     # We add '2' to account for each triple hyphen ( i.e. --- ) that denotes the
     # front matter's start/end
 
     # Extract file contents below front matter block
-    local i=0
+    declare -i j=0
     while IFS='' read -r line; do
-        i=$((i+1))
-        [[ $i -le $front_matter_line_count ]] && continue
+        j=$((j+1))
+        [[ $j -le $front_matter_line_count ]] && continue
 
         content+=("$line")
     done < "$src"
@@ -652,7 +732,6 @@ page::render() {
     [[ -v base_url_override ]] && extra_variables+=("base_url=\"$squib_base_url\"")
 
     printf '%s\n' "${extra_variables[@]}" "$(squib::parse_ini "$squib_configuration_file" false)" > "$squib_named_pipe" &
-    #squib::parse_ini "$squib_configuration_file" >> "$squib_named_pipe" &
 
     if [[ "$fl_debug" -eq 1 ]]; then
         printf '%s\n' "$(<"$layout")" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" | tee "$dest"
@@ -660,9 +739,11 @@ page::render() {
         printf '%s\n' "$(<"$layout")" | "$squib_crunchwrap_command" -i -d "$squib_named_pipe" > "$dest"
     fi
 
-    if [[ $? -ne 0 ]]; then
-        log::warn "function '$squib_crunchwrap_command' returned non-zero code."
-        return 1
+    declare -i rc
+    rc=$?
+    if [[ $rc -ne 0 ]]; then
+        log::error "command '$squib_crunchwrap_command' returned non-zero code."
+        return $rc
     fi
 }
 
@@ -702,26 +783,28 @@ post::collect_metadata() {
     )
 
     # Override variables that are defined in the front matter
+    local val
     for var in "${self_front_matter_variables[@]}"; do
         case "$var" in
             title\=*)
-                local val="${var:6}"
+                val="${var:6}"
                 self_meta_variables+=("__title__=${val:=undefined}")
                 ;;
             author\=*)
-                local val="${var:7}"
+                val="${var:7}"
                 self_meta_variables+=("__author__=${val:=undefined}")
                 ;;
             draft\=*)
-                local val="${var:6}"
+                val="${var:6}"
                 self_meta_variables+=("__draft__=${val:=undefined}")
                 ;;
             tags\=*)
-                local val="${var:5}"
+                val="${var:5}"
                 self_meta_variables+=("__tags__=${val:=undefined}")
                 ;;
         esac
     done
+    unset val
 
     # The following variables are made available inside posts:
     # __published_url__
@@ -757,14 +840,16 @@ page::collect_metadata() {
     )
 
     # Override variables that are defined in the front matter
+    local val
     for var in "${self_front_matter_variables[@]}"; do
         case "$var" in
             title\=*)
-                local val="${var:6}"
+                val="${var:6}"
                 self_meta_variables+=("__title__=${val:=undefined}")
                 ;;
         esac
     done
+    unset val
 
     # The following variables are made available inside posts:
     # __published_url__
@@ -778,7 +863,7 @@ render::all() {
     # by squib, I'm going to flat out ignore all markdown files in the top-level
     # directory. You should instead use '.html'
 
-    blacklist=($(find * -maxdepth 0 -type f -name "*.md" -print))
+    ignorelist=($(find * -maxdepth 0 -type f -name "*.md" -print))
     # -maxdepth 0
     # Don't traverse into any subdirectories. Only look for files in the
     # current working directory
@@ -786,11 +871,11 @@ render::all() {
     # -type f -name "*.md"
     # Only look for files that have extension '.md'
 
-    log::debug "blacklisting: ${blacklist[@]}"
+    log::debug "ignoring: ${ignorelist[@]}"
 
     # Remove blacklisted files found in array: 'blacklist' from array: 'squib_pages'
     declare -a squib_pages_copy
-    for file in "${blacklist[@]}"; do
+    for file in "${ignorelist[@]}"; do
         squib_pages_copy=($(string::greplace "${squib_pages[*]}" "$file" ""))
     done
 
@@ -854,16 +939,25 @@ build::all() {
 
     readonly squib_posts=($(find _posts -type f \( -name "*.html" -o -name "*.md" \) -print | sort -r))
 
-    readonly squib_post_html_tags="<ul>$(post::render_links)</ul>"
-    if [[ $? -ne 0 ]]; then
-        log::fatal "function 'post::render_links' returned non-zero code."
+    local tmp
+    tmp="$(post::render_links)"
+
+    declare -i rc
+    rc=$?
+
+    if [[ $rc -ne 0 ]]; then
+        return $rc
     fi
+    readonly squib_post_html_tags="<ul>$tmp</ul>"
+    unset tmp
 
-    prep::all
-    render::all
-    copy::all
+    prep::all || log::fatal "Function 'prep::all' returned non-zero code"
+    render::all || log::fatal "Function 'render::all' returned non-zero code"
+    copy::all || log::fatal "Function 'copy::all' returned non-zero code"
 
-    [[ $fl_watch -eq 1 ]] && watch::all
+    if [[ $fl_watch -eq 1 ]]; then
+        watch::all || log::fatal "Function 'watch::all' returned non-zero code"
+    fi
 }
 
 main() {
@@ -876,7 +970,7 @@ main() {
 
     case "$action" in
         "build")
-            build::all
+            build::all || log::fatal "Function 'build::all' returned non-zero code"
             ;;
         *)
             log::fatal "Unsupported action: '$action'"
