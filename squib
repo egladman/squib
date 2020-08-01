@@ -940,9 +940,8 @@ build::all() {
     readonly squib_posts=($(find _posts -type f \( -name "*.html" -o -name "*.md" \) -print | sort -r))
 
     local tmp
-    tmp="$(post::render_links)"
-
     declare -i rc
+    tmp="$(post::render_links)"
     rc=$?
 
     if [[ $rc -ne 0 ]]; then
